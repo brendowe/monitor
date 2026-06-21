@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Detector de Chamadas - Alarme</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        text-align: center;
+        padding: 40px;
+        background: #2c3e50;
+        color: white;
+      }
+      .container {
+        max-width: 500px;
+        margin: 0 auto;
+        background: #34495e;
+        padding: 30px;
+        border-radius: 10px;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+      }
+      button {
+        padding: 15px 30px;
+        font-size: 18px;
+        font-weight: bold;
+        cursor: pointer;
+        background: #e74c3c;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        transition: 0.2s;
+      }
+      button:hover {
+        background: #c0392b;
+      }
+      #status {
+        margin-top: 25px;
+        font-weight: bold;
+        font-size: 20px;
+        color: #f1c40f;
+      }
+      video,
+      canvas {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h2>🚨 Alarme </h2>
+      <p>
+        Clique abaixo e selecione a <b>Tela Inteira</b> ou a
+        <b>Janela do Programa</b> para iniciar.
+      </p>
+
+      <button id="startBtn">LIGAR MONITOR</button>
+      <div id="status">Status: Desativado</div>
+    </div>
+
+    <video id="video" autoplay></video>
+    <canvas id="canvas"></canvas>
+
+    <script>
+      const startBtn = document.getElementById("startBtn");
+      const video = document.getElementById("video");
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      const statusDiv = document.getElementById("status");
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+      const ANALISE_MS = 250;
+      const CONFIRMACOES_NECESSARIAS = 2;
+      const COOLDOWN_MS = 8000;
+
+      let timerAnalise = null;
+      let confirmacoesSeguidas = 0;
+      let emCooldown = false;
+
+      function tocarBuzina() {
+        const osc1 = audioCtx.createOscillator();
+        const osc2 = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        osc1.connect(gainNode);
+        osc2.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        osc1.type = "sawtooth";
+        osc1.frequency.value = 150;
+
+        osc2.type = "sawtooth";
+        osc2.frequency.value = 155;
+
+        gainNode.gain.setValueAtTime(1, audioCtx.currentTime);
+
+        osc1.start();
+        osc2.start();
+
+        osc1.stop(audioCtx.currentTime + 1.5);
+        osc2.stop(audioCtx.currentTime + 1.5);
+      }
+
+      function atualizarStatus(texto, cor) {
+        statusDiv.innerText = texto;
+        statusDiv.style.color = cor;
+      }
+
+      function ehVermelhoForte(r, g, b) {
+        return r > 175 && g < 95 && b < 95 && r - Math.max(g, b) > 70;
+      }
+
+      function ehVermelhoEscuro(r, g, b) {
+        return r > 95 && g < 60 && b < 70 && r - Math.max(g, b) > 35;
+      }
+
+      function ehBranco(r, g, b) {
+        return r > 220 && g > 220 && b > 220;
+      }
+
+      function ehNeutroClaro(r, g, b) {
+        const media = (r + g + b) / 3;
+        return media > 170 && Math.abs(r - g) < 30 && Math.abs(g - b) < 30;
+      }
+
+      function contarPixels(x, y, largura, altura, predicado, passo = 2) {
+        const area = ctx.getImageData(x, y, largura, altura).data;
+        let total = 0;
+        let match = 0;
+
+        for (let i = 0; i < area.length; i += 4 * passo) {
+          const r = area[i];
+          const g = area[i + 1];
+          const b = area[i + 2];
+          total++;
+          if (predicado(r, g, b)) {
+            match++;
+          }
+        }
+
+        return total ? match / total : 0;
+      }
+
+      function mediaBloco(x, y, largura, altura) {
+        const area = ctx.getImageData(x, y, largura, altura).data;
+        let somaR = 0;
+        let somaG = 0;
+        let somaB = 0;
+        let total = 0;
+
+        for (let i = 0; i < area.length; i += 4) {
+          somaR += area[i];
+          somaG += area[i + 1];
+          somaB += area[i + 2];
+          total++;
+        }
+
+        return total
+          ? { r: somaR / total, g: somaG / total, b: somaB / total }
+          : { r: 0, g: 0, b: 0 };
+      }
+
+      function ehRedDialog(r, g, b) {
+        return r > 120 && g < 95 && b < 95 && r - Math.max(g, b) > 35;
+      }
+
+      function ehBordaVermelha(r, g, b) {
+        return r > 200 && g < 80 && b < 80 && r - Math.max(g, b) > 90;
+      }
+
+      function ehTextoBranco(r, g, b) {
+        return r > 225 && g > 225 && b > 225;
+      }
+
+      function ehBotaoCinza(r, g, b) {
+        const media = (r + g + b) / 3;
+        return (
+          media > 150 &&
+          media < 235 &&
+          Math.abs(r - g) < 28 &&
+          Math.abs(g - b) < 28
+        );
+      }
+
+      function ehFundoPreto(r, g, b) {
+        return r < 60 && g < 60 && b < 60;
+      }
+
+      function mediaRegiao(x, y, largura, altura) {
+        const area = ctx.getImageData(x, y, largura, altura).data;
+        let somaR = 0;
+        let somaG = 0;
+        let somaB = 0;
+        let total = 0;
+
+        for (let i = 0; i < area.length; i += 4) {
+          somaR += area[i];
+          somaG += area[i + 1];
+          somaB += area[i + 2];
+          total++;
+        }
+
+        return total
+          ? { r: somaR / total, g: somaG / total, b: somaB / total }
+          : { r: 0, g: 0, b: 0 };
+      }
+
+      function detectarPopupVermelho() {
+        if (
+          video.paused ||
+          video.ended ||
+          !video.videoWidth ||
+          !video.videoHeight
+        ) {
+          return { detectado: false, score: 0 };
+        }
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const popupLargura = Math.max(280, Math.round(canvas.width * 0.46));
+        const popupAltura = Math.max(190, Math.round(canvas.height * 0.33));
+        const popupX = Math.max(
+          0,
+          Math.round((canvas.width - popupLargura) / 2),
+        );
+        const popupY = Math.max(
+          0,
+          Math.round((canvas.height - popupAltura) / 2),
+        );
+
+        const borda = Math.max(
+          5,
+          Math.round(Math.min(popupLargura, popupAltura) * 0.025),
+        );
+        const interiorX = popupX + borda;
+        const interiorY = popupY + borda;
+        const interiorLargura = Math.max(1, popupLargura - borda * 2);
+        const interiorAltura = Math.max(1, popupAltura - borda * 2);
+
+        const mediaInterior = mediaBloco(
+          interiorX,
+          interiorY,
+          interiorLargura,
+          interiorAltura,
+        );
+        const mediaFora = mediaBloco(
+          Math.max(0, Math.round(canvas.width * 0.1)),
+          Math.max(0, Math.round(canvas.height * 0.1)),
+          Math.max(1, Math.round(canvas.width * 0.12)),
+          Math.max(1, Math.round(canvas.height * 0.12)),
+        );
+
+        const faixaBorda = Math.max(3, borda + 1);
+        const bordaSuperior = contarPixels(
+          popupX,
+          popupY,
+          popupLargura,
+          faixaBorda,
+          ehBordaVermelha,
+          1,
+        );
+        const bordaInferior = contarPixels(
+          popupX,
+          popupY + popupAltura - faixaBorda,
+          popupLargura,
+          faixaBorda,
+          ehBordaVermelha,
+          1,
+        );
+        const bordaEsquerda = contarPixels(
+          popupX,
+          popupY,
+          faixaBorda,
+          popupAltura,
+          ehBordaVermelha,
+          1,
+        );
+        const bordaDireita = contarPixels(
+          popupX + popupLargura - faixaBorda,
+          popupY,
+          faixaBorda,
+          popupAltura,
+          ehBordaVermelha,
+          1,
+        );
+        const bordaMedia =
+          (bordaSuperior + bordaInferior + bordaEsquerda + bordaDireita) / 4;
+
+        const textoTopo = contarPixels(
+          popupX + Math.round(popupLargura * 0.03),
+          popupY + Math.round(popupAltura * 0.03),
+          Math.round(popupLargura * 0.6),
+          Math.round(popupAltura * 0.3),
+          ehTextoBranco,
+          1,
+        );
+
+        const botaoX = popupX + Math.round(popupLargura * 0.34);
+        const botaoY = popupY + Math.round(popupAltura * 0.6);
+        const botaoLargura = Math.max(85, Math.round(popupLargura * 0.28));
+        const botaoAltura = Math.max(32, Math.round(popupAltura * 0.17));
+        const botaoClaro = contarPixels(
+          botaoX,
+          botaoY,
+          botaoLargura,
+          botaoAltura,
+          ehBotaoCinza,
+          1,
+        );
+
+        const iconeX = popupX + Math.round(popupLargura * 0.78);
+        const iconeY = popupY + Math.round(popupAltura * 0.58);
+        const iconeLargura = Math.max(56, Math.round(popupLargura * 0.17));
+        const iconeAltura = Math.max(56, Math.round(popupAltura * 0.28));
+        const iconeFundoPreto = contarPixels(
+          iconeX,
+          iconeY,
+          iconeLargura,
+          iconeAltura,
+          ehFundoPreto,
+          1,
+        );
+        const iconeBranco = contarPixels(
+          iconeX,
+          iconeY,
+          iconeLargura,
+          iconeAltura,
+          ehTextoBranco,
+          1,
+        );
+
+        const vermelhoInterior =
+          mediaInterior.r > mediaInterior.g + 20 &&
+          mediaInterior.r > mediaInterior.b + 20 &&
+          mediaInterior.r > 70;
+        const contrasteFundo = mediaInterior.r > mediaFora.r + 20;
+        const interiorEscuro =
+          mediaInterior.g < mediaFora.g + 25 &&
+          mediaInterior.b < mediaFora.b + 25;
+        const proporcaoTela =
+          popupLargura / canvas.width > 0.34 &&
+          popupLargura / canvas.width < 0.62 &&
+          popupAltura / canvas.height > 0.22 &&
+          popupAltura / canvas.height < 0.48;
+
+        const score = [
+          vermelhoInterior,
+          contrasteFundo,
+          interiorEscuro,
+          proporcaoTela,
+          bordaMedia > 0.2,
+          textoTopo > 0.01,
+          botaoClaro > 0.1,
+          iconeFundoPreto > 0.18,
+          iconeBranco > 0.05,
+        ].filter(Boolean).length;
+
+        return {
+          detectado: score >= 7,
+          score,
+        };
+      }
+
+      startBtn.addEventListener("click", async () => {
+        try {
+          if (audioCtx.state === "suspended") {
+            await audioCtx.resume();
+          }
+
+          const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: false,
+          });
+
+          video.srcObject = stream;
+          await video.play();
+
+          atualizarStatus("🟢 MONITORANDO A TELA...", "#2ecc71");
+
+          if (timerAnalise) {
+            clearInterval(timerAnalise);
+          }
+
+          timerAnalise = setInterval(analisarTela, ANALISE_MS);
+        } catch (err) {
+          atualizarStatus("❌ Erro: Permissão negada.", "#e74c3c");
+        }
+      });
+
+      function analisarTela() {
+        const resultado = detectarPopupVermelho();
+
+        if (resultado.detectado) {
+          confirmacoesSeguidas++;
+
+          if (!emCooldown) {
+            atualizarStatus(
+              `🟡 SINAL VISUAL ${confirmacoesSeguidas}/${CONFIRMACOES_NECESSARIAS} (${resultado.score}/9)`,
+              "#f1c40f",
+            );
+          }
+
+          if (confirmacoesSeguidas >= CONFIRMACOES_NECESSARIAS && !emCooldown) {
+            emCooldown = true;
+            confirmacoesSeguidas = 0;
+            tocarBuzina();
+            atualizarStatus(
+              "🚨 CHAMADA DETECTADA NA CAIXA VERMELHA!",
+              "#e74c3c",
+            );
+
+            setTimeout(() => {
+              emCooldown = false;
+              atualizarStatus("🟢 MONITORANDO A TELA...", "#2ecc71");
+            }, COOLDOWN_MS);
+          }
+          return;
+        }
+
+        confirmacoesSeguidas = 0;
+
+        if (!emCooldown) {
+          atualizarStatus("🟢 MONITORANDO A TELA...", "#2ecc71");
+        }
+      }
+    </script>
+  </body>
+</html>
